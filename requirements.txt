@@ -1,0 +1,9 @@
+requests
+tree_sitter
+tree_sitter_python
+pandas
+langchain
+langchain_community
+langchain_core
+sentence-transformers
+faiss-cpu
