@@ -11,7 +11,7 @@ from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_core.documents import Document
 
-# DI-Bench/.cache
+# repo-data
 PY_LANGUAGE = Language(tree_sitter_python.language())
 
 class PyDependencyResolver:
@@ -278,7 +278,7 @@ class PyDependencyResolver:
         # Create the prompt for Ollama
         ollama_prompt = f"""You are a Python code expert. 
 Based on the following information about the packages and dependencies used in a Python repository,
-return a list of all Python packages with their specific versions, and the python version required to run. 
+return a list of all Python packages with their specific versions required to run. 
 
 All necessary packages that need versions:
 {', '.join([f"{package}" for package in packages])}
@@ -286,15 +286,15 @@ All necessary packages that need versions:
 Extra package information from PyPI:
 {context}
 
-Respond **only** with the JSON object matching this schema, do not include any additional text:
-{{"python_packages": [{{"package": "<String>", "version": "<String>"}}], "python_version": "<String>"}}
+Respond **only** with the JSON object matching this schema, do not include any additional text or comments:
+{{"python_packages": [{{"package": "<String>", "version": "<String>"}}]}}
 """
         
         # Generate analysis with Ollama
         ollama_ans = self.generate_with_ollama(ollama_prompt)
         
         results = {
-            "repository": repo_path,
+            "repository": str(repo_path),
             "packages_count": len(packages),
             "retrieved_context": context,
             "packages": ollama_ans
@@ -324,12 +324,13 @@ def main():
             all_results.append(results)
             
             # Print analysis
-            print("\n" + "="*50)
-            print(f"Repository: {results['repository']}")
-            print(f"Package count: {results['packages_count']}")
-            print("\nPackages:")
-            print(results['packages'])
-            print("\n" + "="*50)
+            # print("\n" + "="*50)
+            # print(f"Repository: {results['repository']}")
+            # print(f"Package count: {results['packages_count']}")
+            # print("\nPackages:")
+            # print(results['packages'])
+            # print("\n" + "="*50)
+
     
     # Save results to JSON file
     with open("repository_analysis_results.json", "w") as f:
