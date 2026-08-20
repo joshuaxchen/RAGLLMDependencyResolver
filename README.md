@@ -63,6 +63,8 @@ scores, missing/spurious breakdowns) and `predictions.json`.
 
 ## Results — DI-Bench regular Python (98 instances)
 
+Full experimental record, error analysis and negative results: [RESULTS.md](RESULTS.md).
+
 | Method | Precision | Recall | F1 | Fake rate | Perfect | Runtime |
 |---|---|---|---|---|---|---|
 | **`deterministic` (this repo, no LLM)** | **67.0** | **80.8** | **73.2** | 0.0 | **20/98** | **9s** |
