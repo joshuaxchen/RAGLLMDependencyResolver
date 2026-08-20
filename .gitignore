@@ -1,0 +1,20 @@
+# Benchmark data (downloaded, not versioned).
+# Note: dataset-dibench-regular.jsonl IS tracked at the repo root, so this
+# ignores only the local download copy under data/.
+repo-data/
+data/
+*.tar.gz
+
+# Run outputs
+results/
+
+# PyPI metadata cache
+.cache/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/

@@ -1,9 +1,25 @@
-requests
-tree_sitter
-tree_sitter_python
-pandas
-langchain
-langchain_community
-langchain_core
-sentence-transformers
-faiss-cpu
+# Static analysis.
+# tree-sitter is pinned deliberately: Language.query() is deprecated in 0.24
+# and removed in 0.25, and Query.captures() changed shape across that boundary.
+tree-sitter==0.24.0
+tree-sitter-python==0.23.6
+
+# PyPI metadata lookups.
+requests==2.32.3
+
+# Manifest read/write (format-preserving TOML).
+tomlkit==0.15.1
+
+# Structured LLM output validation.
+pydantic==2.11.4
+
+# Version resolution. Replaces asking the model to invent version numbers.
+uv==0.12.5
+
+# Tests.
+pytest==9.1.1
+
+# Removed with the PyPI-metadata retrieval layer (see depinfer/pipeline.py).
+# Re-add when building retrieval over repository source for the large subset:
+#   langchain-core, langchain-text-splitters, langchain-huggingface,
+#   sentence-transformers, faiss-cpu
