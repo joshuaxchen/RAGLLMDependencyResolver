@@ -81,9 +81,21 @@ Full experimental record, error analysis and negative results: [RESULTS.md](RESU
 | `+ PyPI lexical fallback` | 66.6 | **81.6** | **73.3** | 76.9% | 20/98 | 12s |
 | `+ PyPI dense retrieval` | 65.8 | 81.2 | 72.7 | 76.4% | 20/98 | 9s |
 | `+ config/CI mining` | 45.0 | 81.2 | 57.9 | 81.8% | 1/98 | 24s |
-| `llm` (qwen2.5-coder:7b) | 65.2 | 78.2 | 71.1 | — | 17/98 | 1889s |
+| `llm` (qwen2.5-coder:7b) | 65.6 | 78.0 | 71.3 | 77.3% | 17/97 | 3480s |
 | GPT-4o Imports-Only *(paper)* | 56.5 | 74.9 | 64.4 | — | — | — |
 | GPT-4o All-In-One *(paper)* | 61.8 | 73.6 | 67.2 | — | — | — |
+
+### Large subset (50 instances, avg 268 files / 519k tokens)
+
+| Method | P | R | F1 |
+|---|---|---|---|
+| **`deterministic` (no LLM)** | 35.9 | 58.8 | **44.5** |
+| GPT-4o Imports-Only *(paper)* | 36.9 | 46.9 | 41.3 |
+| GPT-4o File-Iterate *(paper)* | 19.5 | 35.3 | 25.1 |
+| GPT-4o All-In-One *(paper)* | — | — | — (exceeds context) |
+
+Static analysis also beats the best published method on repositories too large
+to fit in a context window.
 
 **A ~40-line lexical matcher beats a 15,000-document FAISS index** at resolving
 unknown import names — 4 of 7 target cases against 2 of 7 — and the dense index

@@ -24,7 +24,7 @@ import tempfile
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-from .manifest import Dependency, read_dependencies
+from .manifest import Dependency, read_build_file
 from .resolve import PyPIClient
 from .versions import is_compatible
 
@@ -69,11 +69,17 @@ class Score:
 
 
 def load_dataset(jsonl_path: Path, language: str = "python") -> dict[str, dict]:
+    """Load instances for one language.
+
+    Compared case-insensitively: the regular dataset spells it "python" and the
+    large dataset "Python", so an exact match silently yields nothing.
+    """
+    wanted = language.lower()
     records = {}
     with open(jsonl_path) as fh:
         for line in fh:
             rec = json.loads(line)
-            if rec.get("language") == language:
+            if str(rec.get("language", "")).lower() == wanted:
                 records[rec["instance_id"]] = rec
     return records
 
@@ -113,9 +119,8 @@ def oracle_dependencies(record: dict, repo_path: Path) -> list[Dependency]:
         deps: list[Dependency] = []
         for rel in record.get("build_files", []):
             path = tmpdir / rel
-            if path.exists() and path.name == "pyproject.toml":
-                _, parsed = read_dependencies(path.read_text())
-                deps.extend(parsed)
+            if path.exists():
+                deps.extend(read_build_file(rel, path.read_text()))
         return deps
 
 

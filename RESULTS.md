@@ -43,7 +43,7 @@ Exec column.
 | `+ PyPI lexical fallback` | 66.6 | **81.6** | **73.3** | 76.9% | 20/98 | 12s |
 | `+ PyPI dense retrieval` | 65.8 | 81.2 | 72.7 | 76.4% | 20/98 | 9s |
 | `+ config/CI mining` | 45.0 | 81.2 | 57.9 | 81.8% | 1/98 | 24s |
-| `llm` (qwen2.5-coder:7b) | 65.2 | 78.2 | 71.1 | — | 17/98 | 1889s |
+| `llm` (qwen2.5-coder:7b) | 65.6 | 78.0 | 71.3 | 77.3% | 17/97 | 3480s |
 | GPT-4o Imports-Only *(paper)* | 56.5 | 74.9 | 64.4 | — | — | — |
 | GPT-4o All-In-One *(paper)* | 61.8 | 73.6 | 67.2 | — | — | — |
 
@@ -116,9 +116,44 @@ Treat the 93.9% as bookkeeping, not evidence.
 
 ### The LLM still does not pay for itself
 
-See the ablation table. The earlier full comparison, run before the version
-metric existed: better on 9 instances, worse on 22, identical on 67, trading 14
-true positives for 10 extra false positives at 200x the runtime.
+Re-run with the current metrics and the python-version fix: F1 71.3 against the
+deterministic 73.2, at **180x the runtime** (3480s vs 19s). Version compatibility
+is a wash (77.3% vs 77.2%), so the model is not helping there either. One
+instance failed outright when Ollama returned no response.
+
+The earlier full comparison: better on 9 instances, worse on 22, identical on 67,
+trading 14 true positives for 10 extra false positives.
+
+### It generalises to the large subset
+
+The large Python subset — 50 instances averaging 268 files and 519k tokens —
+exceeds the context window, which is why the paper's All-In-One method has no
+entry for it.
+
+| Method | P | R | F1 |
+|---|---|---|---|
+| **`deterministic` (this repo, no LLM)** | 35.9 | 58.8 | **44.5** |
+| `+ PyPI lexical fallback` | 35.2 | **59.3** | 44.2 |
+| GPT-4o Imports-Only *(paper)* | **36.9** | 46.9 | 41.3 |
+| GPT-4o File-Iterate *(paper)* | 19.5 | 35.3 | 25.1 |
+| GPT-4o All-In-One *(paper)* | — | — | — (exceeds context) |
+
+Static analysis beats the best published large-subset method on F1 and recall,
+with no model and no retrieval. The lexical fallback does not help here either
+(44.2 vs 44.5), consistent with the regular subset. Absolute numbers are much lower than on the
+regular subset (F1 44.5 vs 73.2), as expected: these repositories declare more
+dependencies and use more indirection.
+
+Ground-truth extraction here required parsing four build-file formats — 14
+`requirements.txt`, 13 `setup.py`, 12 `pyproject.toml`, 4 `setup.cfg` — where
+the regular subset is 100% `pyproject.toml`. Mean extracted dependency count is
+11.5 against the paper's reported 11.8, an independent check. Three instances
+yield an empty oracle: two build `install_requires` dynamically (the AST parser
+declines to guess) and one uses a bespoke `dependencies.py`.
+
+A latent bug surfaced here: the regular dataset spells the language `"python"`
+and the large dataset `"Python"`, so the exact-match filter in `load_dataset`
+silently returned zero instances. Now compared case-insensitively.
 
 ### The fake rate is still 0.0 and still structural
 

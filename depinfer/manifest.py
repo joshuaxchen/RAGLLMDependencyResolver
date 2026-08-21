@@ -100,6 +100,97 @@ def read_dependencies(text: str) -> tuple[str | None, list[Dependency]]:
     return fmt, deps
 
 
+def read_requirements_txt(text: str) -> list[Dependency]:
+    """Parse a requirements.txt. Options lines (-r, -e, --index-url) are skipped."""
+    deps = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or stripped.startswith("-"):
+            continue
+        dep = parse_requirement(stripped)
+        if dep and dep.name not in _NOT_A_DEPENDENCY:
+            deps.append(dep)
+    return deps
+
+
+def read_setup_cfg(text: str) -> list[Dependency]:
+    """Parse `install_requires` from a setup.cfg `[options]` section."""
+    deps: list[Dependency] = []
+    in_block = False
+    for line in text.splitlines():
+        stripped = line.strip()
+        if re.match(r"^install_requires\s*=", stripped):
+            in_block = True
+            tail = stripped.split("=", 1)[1].strip()
+            if tail:
+                dep = parse_requirement(tail)
+                if dep:
+                    deps.append(dep)
+            continue
+        if in_block:
+            if not line.startswith((" ", "\t")) or not stripped:
+                in_block = False
+                continue
+            dep = parse_requirement(stripped)
+            if dep and dep.name not in _NOT_A_DEPENDENCY:
+                deps.append(dep)
+    return deps
+
+
+def read_setup_py(text: str) -> list[Dependency]:
+    """Extract `install_requires=[...]` from setup.py without executing it.
+
+    Parsed with `ast`, so a literal list is required; dynamically-built lists
+    (e.g. read from a file at setup time) yield nothing rather than a wrong
+    answer.
+    """
+    import ast
+
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return []
+
+    deps: list[Dependency] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        for keyword in node.keywords:
+            if keyword.arg != "install_requires":
+                continue
+            try:
+                entries = ast.literal_eval(keyword.value)
+            except (ValueError, SyntaxError):
+                continue
+            if not isinstance(entries, (list, tuple)):
+                continue
+            for entry in entries:
+                dep = parse_requirement(str(entry))
+                if dep and dep.name not in _NOT_A_DEPENDENCY:
+                    deps.append(dep)
+    return deps
+
+
+def read_build_file(filename: str, text: str) -> list[Dependency]:
+    """Dispatch on build-file type.
+
+    The regular subset is 100% pyproject.toml, but the large subset also uses
+    requirements.txt (14), setup.py (13) and setup.cfg (4), so parsing only
+    pyproject.toml would silently score most large instances against an empty
+    ground truth.
+    """
+    name = Path(filename).name
+    if name == "pyproject.toml":
+        return read_dependencies(text)[1]
+    if name == "setup.py":
+        return read_setup_py(text)
+    if name == "setup.cfg":
+        return read_setup_cfg(text)
+    if name.endswith(".txt"):
+        return read_requirements_txt(text)
+    return []
+
+
 def read_requires_python(text: str) -> str | None:
     """The repository's declared Python constraint, as a bare `X.Y` lower bound.
 
