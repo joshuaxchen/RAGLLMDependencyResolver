@@ -10,16 +10,22 @@ requests==2.32.3
 # Manifest read/write (format-preserving TOML).
 tomlkit==0.15.1
 
+# Version constraint comparison (range-aware, not string equality).
+packaging==24.2
+
 # Structured LLM output validation.
 pydantic==2.11.4
 
 # Version resolution. Replaces asking the model to invent version numbers.
 uv==0.12.5
 
+# Dense PyPI retrieval index (build_index.py). Only needed for
+# --pypi-fallback dense; the lexical matcher needs none of this.
+langchain-huggingface==1.2.2
+langchain-community==0.3.23
+langchain-core==1.6.0
+sentence-transformers==4.1.0
+faiss-cpu==1.11.0
+
 # Tests.
 pytest==9.1.1
-
-# Removed with the PyPI-metadata retrieval layer (see depinfer/pipeline.py).
-# Re-add when building retrieval over repository source for the large subset:
-#   langchain-core, langchain-text-splitters, langchain-huggingface,
-#   sentence-transformers, faiss-cpu

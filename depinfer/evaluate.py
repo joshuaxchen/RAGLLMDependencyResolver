@@ -26,6 +26,7 @@ from pathlib import Path
 
 from .manifest import Dependency, read_dependencies
 from .resolve import PyPIClient
+from .versions import is_compatible
 
 
 @dataclass
@@ -34,7 +35,12 @@ class Score:
     tp: int = 0
     fp: int = 0
     fn: int = 0
-    exact_tp: int = 0
+    # Version agreement, evaluated only over true positives. "unknown" covers
+    # oracles that impose no constraint, and is never counted as agreement.
+    version_ok: int = 0
+    version_bad: int = 0
+    version_unknown: int = 0
+    version_conflicts: list[str] = field(default_factory=list)
     fake: int = 0
     n_predicted: int = 0
     n_oracle: int = 0
@@ -43,6 +49,9 @@ class Score:
     missing: list[str] = field(default_factory=list)
     spurious: list[str] = field(default_factory=list)
     fake_names: list[str] = field(default_factory=list)
+    # None when --install-check is off; otherwise whether the set resolves.
+    install_ok: bool | None = None
+    install_detail: str = ""
     error: str | None = None
 
     @property
@@ -134,12 +143,20 @@ def score_instance(
         spurious=sorted(pred_keys - oracle_keys),
     )
 
-    # Exact match additionally requires the version constraint to agree.
-    s.exact_tp = sum(
-        1
-        for k in pred_keys & oracle_keys
-        if pred_by_key[k].version.replace(" ", "") == oracle_by_key[k].version.replace(" ", "")
-    )
+    # Version agreement: is our constraint satisfiable within the oracle's?
+    # String equality would call `==6.0.3` vs `>=5.4.1, <7.0.0` a mismatch.
+    for key in pred_keys & oracle_keys:
+        verdict = is_compatible(pred_by_key[key].version, oracle_by_key[key].version)
+        if verdict is None:
+            s.version_unknown += 1
+        elif verdict:
+            s.version_ok += 1
+        else:
+            s.version_bad += 1
+            s.version_conflicts.append(
+                f"{pred_by_key[key].name}: predicted {pred_by_key[key].version!r} "
+                f"violates oracle {oracle_by_key[key].version!r}"
+            )
 
     if client is not None:
         local = local_modules or set()
@@ -153,13 +170,28 @@ def score_instance(
     return s
 
 
+def _install_summary(scored: list[Score]) -> dict | None:
+    """Install-proxy rate, or None when the check was not run."""
+    checked = [s for s in scored if s.install_ok is not None]
+    if not checked:
+        return None
+    ok = sum(1 for s in checked if s.install_ok)
+    return {
+        "checked": len(checked),
+        "installable": ok,
+        "rate": round(ok / len(checked) * 100, 1),
+    }
+
+
 def aggregate(scores: list[Score]) -> dict:
     """Micro-averaged metrics over all instances."""
     scored = [s for s in scores if s.error is None]
     tp = sum(s.tp for s in scored)
     fp = sum(s.fp for s in scored)
     fn = sum(s.fn for s in scored)
-    exact_tp = sum(s.exact_tp for s in scored)
+    v_ok = sum(s.version_ok for s in scored)
+    v_bad = sum(s.version_bad for s in scored)
+    v_unknown = sum(s.version_unknown for s in scored)
     n_pred = sum(s.n_predicted for s in scored)
     fake = sum(s.fake for s in scored)
 
@@ -176,11 +208,15 @@ def aggregate(scores: list[Score]) -> dict:
             "f1": round(f1 * 100, 1),
             "tp": tp, "fp": fp, "fn": fn,
         },
-        "exact_match": {
-            "precision": round(exact_tp / n_pred * 100, 1) if n_pred else 0.0,
-            "recall": round(exact_tp / (tp + fn) * 100, 1) if (tp + fn) else 0.0,
-            "tp": exact_tp,
+        "versions": {
+            # Share of correctly-named packages whose version constraint is
+            # actually satisfiable within the oracle's range.
+            "compatible_rate": round(v_ok / (v_ok + v_bad) * 100, 1) if (v_ok + v_bad) else 0.0,
+            "compatible": v_ok,
+            "incompatible": v_bad,
+            "unconstrained": v_unknown,
         },
+        "install_proxy": _install_summary(scored),
         "fake_rate": round(fake / n_pred * 100, 1) if n_pred else 0.0,
         "macro_f1": round(
             sum(s.f1 for s in scored) / len(scored) * 100, 1

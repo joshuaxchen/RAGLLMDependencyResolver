@@ -209,3 +209,103 @@ def test_results_are_json_serializable(tmp_path):
     scores = [score_instance("x", [Dependency("a")], [Dependency("a")])]
     path = save_report(scores, aggregate(scores), tmp_path)
     assert json.loads(path.read_text())["summary"]["instances_scored"] == 1
+
+
+# --- version compatibility ------------------------------------------------
+
+@pytest.mark.parametrize(
+    "predicted,oracle,expected",
+    [
+        ("==6.0.3", ">=5.4.1, <7.0.0", True),
+        ("==3.5.0", ">=1.9.0, <3.0.0", False),   # the ConfZ failure mode
+        ("==0.10.2", "^0.10.2", True),           # poetry caret, 0.x
+        ("==0.11.0", "^0.10.2", False),
+        ("==1.9.0", "^1.2.3", True),             # poetry caret, 1.x
+        ("==2.0.0", "^1.2.3", False),
+        ("==1.2.9", "~1.2.3", True),             # poetry tilde
+        ("==1.3.0", "~1.2.3", False),
+        (">=1.0,<2.0", ">=1.5,<3.0", True),      # overlapping ranges
+        (">=1.0,<1.4", ">=1.5,<3.0", False),     # disjoint ranges
+    ],
+)
+def test_version_compatibility(predicted, oracle, expected):
+    from depinfer.versions import is_compatible
+    assert is_compatible(predicted, oracle) is expected
+
+
+def test_unconstrained_oracle_is_unknown_not_agreement():
+    """An oracle with no constraint must not be scored as a match."""
+    from depinfer.versions import is_compatible
+    assert is_compatible("==1.0", "") is None
+
+
+def test_requires_python_extracted():
+    from depinfer.manifest import read_requires_python
+    assert read_requires_python('[project]\nrequires-python = ">=3.8"\n') == "3.8"
+    assert read_requires_python(
+        '[tool.poetry]\nname="x"\n[tool.poetry.dependencies]\npython = "^3.7.2"\n'
+    ) == "3.7"
+
+
+# --- install proxy --------------------------------------------------------
+
+@needs_network
+def test_install_proxy_accepts_valid_set():
+    from depinfer.installcheck import check_dependencies
+    assert check_dependencies([Dependency("requests"), Dependency("click")]).ok
+
+
+@needs_network
+def test_install_proxy_detects_conflicts():
+    """requirementstest.txt exists in the repo with deliberate conflicts."""
+    from depinfer.installcheck import check_dependencies
+    deps = [d for d in (parse_requirement(l)
+            for l in (ROOT / "requirementstest.txt").read_text().splitlines()) if d]
+    assert not check_dependencies(deps).ok
+
+
+# --- config mining --------------------------------------------------------
+
+def test_config_mining_reads_ci_installs(tmp_path):
+    from depinfer.config_mine import mine_repository
+    wf = tmp_path / ".github" / "workflows"
+    wf.mkdir(parents=True)
+    (wf / "ci.yml").write_text("jobs:\n  t:\n    steps:\n      - run: pip install boto3 pytest-cov\n")
+    packages = {p.lower() for p in mine_repository(tmp_path).packages}
+    assert "boto3" in packages and "pytest-cov" in packages
+
+
+def test_config_mining_infers_pytest_cov_from_addopts(tmp_path):
+    from depinfer.config_mine import mine_repository
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\nname="x"\n[tool.pytest.ini_options]\naddopts = "--cov=x"\n'
+    )
+    assert "pytest-cov" in {p.lower() for p in mine_repository(tmp_path).packages}
+
+
+# --- pypi fallback --------------------------------------------------------
+
+@needs_network
+@pytest.mark.parametrize(
+    "module,distribution",
+    [
+        ("digitalocean", "python-digitalocean"),
+        ("allauth", "django-allauth"),
+        ("tagmatcher", "tag-matcher"),
+        ("lightstreamer", "lightstreamer-client-lib"),
+    ],
+)
+def test_lexical_fallback_recovers_known_cases(module, distribution):
+    from depinfer.pypi_index import LexicalPyPIMatcher
+    assert distribution in [m.lower() for m in LexicalPyPIMatcher().lookup(module)]
+
+
+@needs_network
+def test_fallback_cannot_invent_packages():
+    """Every candidate is validated against PyPI before being accepted."""
+    from depinfer.pypi_index import LexicalPyPIMatcher
+    from depinfer.resolve import PyPIClient, resolve_distribution
+    got = resolve_distribution(
+        "zzz_not_a_real_module_xyz", PyPIClient(), fallback=LexicalPyPIMatcher()
+    )
+    assert got is None

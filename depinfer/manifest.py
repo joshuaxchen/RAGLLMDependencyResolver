@@ -100,6 +100,32 @@ def read_dependencies(text: str) -> tuple[str | None, list[Dependency]]:
     return fmt, deps
 
 
+def read_requires_python(text: str) -> str | None:
+    """The repository's declared Python constraint, as a bare `X.Y` lower bound.
+
+    Resolution must be pinned to this. Without it `uv` resolves to latest, which
+    can select packages requiring a newer interpreter than the project supports —
+    the cause of both the observed version conflicts and the venv install
+    failures.
+    """
+    try:
+        doc = tomlkit.parse(text)
+    except Exception:
+        return None
+
+    raw = None
+    fmt = detect_format(doc)
+    if fmt == POETRY:
+        raw = doc.get("tool", {}).get("poetry", {}).get("dependencies", {}).get("python")
+    elif fmt == PEP621:
+        raw = doc.get("project", {}).get("requires-python")
+    if raw is None:
+        return None
+
+    match = re.search(r"(\d+)\.(\d+)", str(raw))
+    return f"{match.group(1)}.{match.group(2)}" if match else None
+
+
 def write_dependencies(text: str, deps: list[Dependency]) -> str:
     """Write deps into the runtime dependency section, preserving formatting."""
     doc = tomlkit.parse(text)

@@ -22,6 +22,7 @@ from depinfer.evaluate import (
     Score, aggregate, load_dataset, oracle_dependencies, save_report, score_instance,
 )
 from depinfer.extract import find_repositories
+from depinfer.installcheck import check_dependencies
 from depinfer.generate import OllamaBackend
 from depinfer.manifest import write_dependencies
 from depinfer.pipeline import infer_repository
@@ -56,14 +57,42 @@ def parse_args(argv=None):
                         "blocked on a response that never arrives.")
     p.add_argument("--out", type=Path, default=None, help="output dir (default results/<method>)")
     p.add_argument("--no-pin", action="store_true", help="emit unpinned names, skip uv resolution")
+    p.add_argument("--pypi-fallback", choices=["off", "lexical", "dense"], default="off",
+                   help="resolve import names that map to no package. 'lexical' searches the "
+                        "full PyPI name list; 'dense' queries the prebuilt embedding index "
+                        "(run build_index.py first).")
+    p.add_argument("--config-mining", action="store_true",
+                   help="also mine CI workflows, [tool.*] blocks and README for packages "
+                        "that are declared but never imported")
     p.add_argument("--write-manifests", action="store_true",
                    help="write filled pyproject.toml copies into the output dir")
+    p.add_argument("--force", action="store_true",
+                   help="overwrite an existing report even if it covers more instances")
+    p.add_argument("--install-check", choices=["off", "compile", "venv"], default="off",
+                   help="verify the predicted set installs. 'compile' resolves with uv "
+                        "(seconds); 'venv' does a real pip install + pip check (minutes). "
+                        "This is a proxy for executability, not the paper's Exec metric.")
     return p.parse_args(argv)
+
+
+def existing_report_size(out_dir: Path) -> int:
+    """Instance count of a report already in out_dir, or 0."""
+    path = out_dir / "score_report.json"
+    if not path.exists():
+        return 0
+    try:
+        return len(json.loads(path.read_text()).get("instances", []))
+    except (json.JSONDecodeError, OSError):
+        return 0
 
 
 def main(argv=None) -> int:
     args = parse_args(argv)
-    out_dir = args.out or (ROOT / "results" / args.method)
+    # A partial run must never clobber a full one: a --limit 3 run once
+    # overwrote the 98-instance report, and RESULTS.md was nearly written
+    # from three instances.
+    tag = args.method + (f"-limit{args.limit}" if args.limit else "")
+    out_dir = args.out or (ROOT / "results" / tag)
     if args.workers is None:
         args.workers = 1 if args.method == "llm" else 6
 
@@ -80,6 +109,17 @@ def main(argv=None) -> int:
     if args.limit:
         repos = repos[: args.limit]
 
+    # Fail before doing the work, not after.
+    prior = existing_report_size(out_dir)
+    if prior > len(repos) and not args.force:
+        print(
+            f"error: {out_dir / 'score_report.json'} covers {prior} instances; "
+            f"this run would write {len(repos)} and lose data.\n"
+            f"       pass --force to overwrite, or --out to write elsewhere.",
+            file=sys.stderr,
+        )
+        return 1
+
     backend = None
     if args.method == "llm":
         backend = OllamaBackend(model=args.model, url=args.ollama_url)
@@ -87,6 +127,21 @@ def main(argv=None) -> int:
     print(f"method={args.method}" + (f" model={args.model}" if backend else ""))
     print(f"repositories: {len(repos)}   dataset instances: {len(dataset)}")
     print(f"output: {out_dir}\n")
+
+    fallback = None
+    if args.pypi_fallback == "lexical":
+        from depinfer.pypi_index import LexicalPyPIMatcher
+        fallback = LexicalPyPIMatcher()
+    elif args.pypi_fallback == "dense":
+        from depinfer.pypi_index import DensePyPIIndex
+        fallback = DensePyPIIndex()
+        if not fallback.exists():
+            print("error: dense index not built; run build_index.py", file=sys.stderr)
+            return 1
+        # Load the embedding model on this thread. Lazy-loading it from several
+        # worker threads at once races inside torch and fails with
+        # "Cannot copy out of meta tensor".
+        fallback.lookup("warmup")
 
     client = PyPIClient()
     started = time.time()
@@ -99,7 +154,8 @@ def main(argv=None) -> int:
 
         result = infer_repository(
             repo, client, method=args.method, backend=backend,
-            pin_versions=not args.no_pin,
+            pin_versions=not args.no_pin, config_mining=args.config_mining,
+            fallback=fallback,
         )
         if result.error:
             return Score(instance_id=iid, error=result.error), asdict(result)
@@ -113,6 +169,11 @@ def main(argv=None) -> int:
             iid, result.dependencies, oracle,
             client=client, local_modules=set(result.first_party),
         )
+
+        if args.install_check != "off":
+            outcome = check_dependencies(result.dependencies, mode=args.install_check)
+            score.install_ok = outcome.ok
+            score.install_detail = outcome.detail[:500]
 
         if args.write_manifests:
             src = repo / "pyproject.toml"
@@ -143,7 +204,7 @@ def main(argv=None) -> int:
 
     scores.sort(key=lambda s: s.instance_id)
     summary = aggregate(scores)
-    summary["method"] = args.method
+    summary["method"] = args.method + ("+config" if args.config_mining else "")
     summary["model"] = args.model if args.method == "llm" else None
     summary["elapsed_seconds"] = round(time.time() - started, 1)
 
@@ -156,8 +217,13 @@ def main(argv=None) -> int:
     print("=" * 62)
     n = summary["name_only"]
     print(f"  Name-only   P {n['precision']:5.1f}   R {n['recall']:5.1f}   F1 {n['f1']:5.1f}")
-    e = summary["exact_match"]
-    print(f"  Exact       P {e['precision']:5.1f}   R {e['recall']:5.1f}")
+    v = summary["versions"]
+    print(f"  Versions    {v['compatible_rate']:5.1f}% compatible "
+          f"({v['compatible']} ok / {v['incompatible']} bad / {v['unconstrained']} unconstrained)")
+    if summary.get("install_proxy"):
+        ip = summary["install_proxy"]
+        print(f"  Installs    {ip['rate']:5.1f}% ({ip['installable']}/{ip['checked']}) "
+              f"[proxy, not the paper's Exec metric]")
     print(f"  Fake rate   {summary['fake_rate']:5.1f}")
     print(f"  Macro F1    {summary['macro_f1']:5.1f}")
     print(f"  Perfect     {summary['perfect_instances']}/{summary['instances_scored']}")

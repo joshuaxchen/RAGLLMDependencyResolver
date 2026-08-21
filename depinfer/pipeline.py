@@ -17,9 +17,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .config_mine import mine_repository
 from .extract import extract_imports, find_first_party
 from .generate import Backend, select_runtime_dependencies
-from .manifest import Dependency
+from .manifest import Dependency, read_requires_python
 from .resolve import PyPIClient, resolve_distribution, resolve_versions
 
 # Packages that are development tooling, never runtime dependencies of the
@@ -56,12 +57,16 @@ class InferenceResult:
     test_only: list[str] = field(default_factory=list)
     unresolved: list[str] = field(default_factory=list)
     first_party: list[str] = field(default_factory=list)
+    requires_python: str | None = None
+    mined: list[str] = field(default_factory=list)
     method: str = "deterministic"
     resolve_error: str | None = None
     error: str | None = None
 
 
-def build_candidates(repo_path: Path, client: PyPIClient) -> tuple[list[dict], list[str], list[str]]:
+def build_candidates(
+    repo_path: Path, client: PyPIClient, fallback=None
+) -> tuple[list[dict], list[str], list[str]]:
     """Map imported modules to PyPI distributions.
 
     Returns (candidates, test_only_modules, unresolved_modules).
@@ -71,7 +76,7 @@ def build_candidates(repo_path: Path, client: PyPIClient) -> tuple[list[dict], l
     unresolved: list[str] = []
 
     for module in sorted(scan.all_modules):
-        distribution = resolve_distribution(module, client)
+        distribution = resolve_distribution(module, client, fallback=fallback)
         if not distribution:
             unresolved.append(module)
             continue
@@ -95,12 +100,14 @@ def infer_repository(
     method: str = "deterministic",
     backend: Backend | None = None,
     pin_versions: bool = True,
+    config_mining: bool = False,
+    fallback=None,
 ) -> InferenceResult:
     instance_id = repo_path.name
     result = InferenceResult(instance_id=instance_id, method=method)
 
     try:
-        candidates, test_only, unresolved = build_candidates(repo_path, client)
+        candidates, test_only, unresolved = build_candidates(repo_path, client, fallback)
     except Exception as exc:
         result.error = f"extraction failed: {exc}"
         return result
@@ -109,6 +116,38 @@ def infer_repository(
     result.test_only = test_only
     result.unresolved = unresolved
     result.first_party = sorted(find_first_party(repo_path))
+
+    pyproject = repo_path / "pyproject.toml"
+    if pyproject.exists():
+        try:
+            result.requires_python = read_requires_python(pyproject.read_text())
+        except OSError:
+            pass
+
+    if config_mining:
+        # Dependencies declared in CI/config but never imported are invisible to
+        # static import analysis. Validate against PyPI so mined strings that are
+        # not real packages do not become false positives.
+        evidence = mine_repository(repo_path)
+        known = {c["distribution"].lower() for c in candidates}
+        for package in sorted(evidence.packages):
+            if package.lower() in known:
+                continue
+            if not client.exists(package):
+                continue
+            meta = client.metadata(package) or {}
+            name = meta.get("name", package)
+            result.mined.append(name)
+            candidates.append(
+                {
+                    "module": package,
+                    "distribution": name,
+                    "summary": meta.get("summary", ""),
+                    "n_files": 0,
+                    "where": f"config: {', '.join(sorted(evidence.sources.get(package, ())))}",
+                    "test_only": False,
+                }
+            )
 
     if method == "llm":
         if backend is None:
@@ -138,7 +177,9 @@ def infer_repository(
         return result
 
     if pin_versions:
-        pinned, err = resolve_versions(names)
+        # Resolve against the repo's own Python floor, not the latest
+        # interpreter, or uv selects releases the project cannot run.
+        pinned, err = resolve_versions(names, python_version=result.requires_python)
         result.resolve_error = err
         # On resolver failure emit unpinned names rather than inventing versions.
         result.dependencies = [

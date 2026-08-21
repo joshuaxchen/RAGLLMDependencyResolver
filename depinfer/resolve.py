@@ -163,8 +163,14 @@ class PyPIClient:
         return self.metadata(name) is not None
 
 
-def resolve_distribution(module: str, client: PyPIClient) -> str | None:
-    """Best-effort import name -> PyPI distribution name."""
+def resolve_distribution(
+    module: str, client: PyPIClient, fallback=None
+) -> str | None:
+    """Best-effort import name -> PyPI distribution name.
+
+    `fallback` is an optional object with `.lookup(module) -> list[str]` used
+    only when every cheap strategy fails. See `depinfer.pypi_index`.
+    """
     if module in IMPORT_TO_DISTRIBUTION:
         mapped = IMPORT_TO_DISTRIBUTION[module]
         if not mapped:
@@ -184,6 +190,14 @@ def resolve_distribution(module: str, client: PyPIClient) -> str | None:
     dashed = module.replace("_", "-")
     if dashed != module and client.exists(dashed):
         return dashed
+
+    # Last resort: search PyPI for a plausible distribution. Every candidate is
+    # still validated against the real index, so this cannot invent a package.
+    if fallback is not None:
+        for candidate in fallback.lookup(module):
+            if client.exists(candidate):
+                meta = client.metadata(candidate)
+                return meta["name"] if meta else candidate
 
     return None
 
